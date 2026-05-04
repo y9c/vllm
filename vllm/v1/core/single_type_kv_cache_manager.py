@@ -482,9 +482,13 @@ class FullAttentionManager(SingleTypeKVCacheManager):
             else:
                 break
         if use_eagle and computed_blocks[0]:
-            # Need to drop the last matched block if eagle is enabled.
-            for computed in computed_blocks:
-                computed.pop()
+            # Need to drop the last matched block if eagle is enabled,
+            # but only if we found more than 1 block. When only 1 block
+            # is found (short prompt that barely fills 1 block), popping
+            # it would reduce cache hits to 0, completely defeating cache.
+            if len(computed_blocks[0]) > 1:
+                for computed in computed_blocks:
+                    computed.pop()
         while (
             block_size != alignment_tokens  # Faster for common case.
             and len(computed_blocks[0]) * block_size % alignment_tokens != 0

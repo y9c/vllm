@@ -578,6 +578,23 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
             if is_simple_hybrid:
                 break
 
+        # Compute the TRUE hit_length as the MAX hit length across all groups.
+        # Some groups (e.g. Mamba) may return 0 blocks because their block
+        # pool is never populated, while FullAttention found real hits.
+        # We must not lose FullAttention's result just because Mamba returned 0.
+        true_hit_length = 0
+        for blks in hit_blocks_by_group:
+            if blks is not None and len(blks) > 0:
+                for spec, gids, _ in self.attention_groups:
+                    for gid in gids:
+                        if blks is hit_blocks_by_group[gid]:
+                            true_hit_length = max(
+                                true_hit_length,
+                                len(blks) * spec.block_size)
+                            break
+        if true_hit_length > 0:
+            hit_length = true_hit_length
+
         # Truncate full attention blocks to final hit_length (if present)
         spec, group_ids, _ = self.attention_groups[0]
         if isinstance(spec, FullAttentionSpec):
@@ -585,6 +602,19 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
             for group_id in group_ids:
                 if (blks := hit_blocks_by_group[group_id]) is not None:
                     del blks[num_blocks:]
+
+            # For Mamba groups in align mode: Mamba uses the same block_size
+            # as FullAttention. If Mamba found fewer blocks (or 0), fill in
+            # null blocks so the cache hit length is consistent.
+            num_groups = len(self.kv_cache_config.kv_cache_groups)
+            for group_id in range(num_groups):
+                if group_id not in group_ids:
+                    blks = hit_blocks_by_group[group_id]
+                    if blks is not None and len(blks) < num_blocks:
+                        missing = num_blocks - len(blks)
+                        hit_blocks_by_group[group_id] = (
+                            [self.block_pool.null_block] * missing + blks
+                        )
 
         return tuple(
             blocks if blocks is not None else [] for blocks in hit_blocks_by_group
